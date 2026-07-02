@@ -1,5 +1,5 @@
 AWSTemplateFormatVersion: '2010-09-09'
-Description: Todo App — RDS PostgreSQL 16 + Secrets Manager + rotation
+Description: Todo App — RDS PostgreSQL 16 + Secrets Manager
 
 Parameters:
   EnvironmentName:
