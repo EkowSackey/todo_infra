@@ -17,7 +17,7 @@ Resources:
   AlbSg:
     Type: AWS::EC2::SecurityGroup
     Properties:
-      GroupDescription: ALB — internet-facing HTTP
+      GroupDescription: ALB - internet-facing HTTP
       VpcId: !Ref VpcId
       SecurityGroupIngress:
         - IpProtocol: tcp
