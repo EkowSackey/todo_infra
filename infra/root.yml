@@ -133,8 +133,8 @@ Resources:
       Parameters:
         EnvironmentName: !Ref EnvironmentName
         AppName: !Ref AppName
-        RDSSubnet1Id: !GetAtt VPCStack.Outputs.RDSSubnet1Id
-        RDSSubnet2Id: !GetAtt VPCStack.Outputs.RDSSubnet2Id
+        ProxySubnet1Id: !GetAtt VPCStack.Outputs.ProxySubnet1Id
+        ProxySubnet2Id: !GetAtt VPCStack.Outputs.ProxySubnet2Id
         RdsProxySgId: !GetAtt SecurityGroupsStack.Outputs.RdsProxySgId
         DBSecretArn: !GetAtt RDSStack.Outputs.DBSecretArn
         DBInstanceIdentifier: !GetAtt RDSStack.Outputs.DBInstanceIdentifier

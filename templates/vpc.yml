@@ -27,6 +27,10 @@ Mappings:
       CIDR: '10.0.30.0/24'
     RedisSubnet2:
       CIDR: '10.0.31.0/24'
+    ProxySubnet1:
+      CIDR: '10.0.40.0/24'
+    ProxySubnet2:
+      CIDR: '10.0.41.0/24'
 
 Resources:
 
@@ -124,6 +128,40 @@ Resources:
       Tags:
         - Key: Name
           Value: !Sub ${EnvironmentName}-${AppName}-rds-2
+
+  # ── Private RDS Proxy subnets ─────────────────────────────────────────────
+
+  ProxySubnet1:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref VPC
+      CidrBlock: !FindInMap [SubnetConfig, ProxySubnet1, CIDR]
+      AvailabilityZone: !Select [0, !GetAZs '']
+      Tags:
+        - Key: Name
+          Value: !Sub ${EnvironmentName}-${AppName}-proxy-1
+
+  ProxySubnet2:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref VPC
+      CidrBlock: !FindInMap [SubnetConfig, ProxySubnet2, CIDR]
+      AvailabilityZone: !Select [1, !GetAZs '']
+      Tags:
+        - Key: Name
+          Value: !Sub ${EnvironmentName}-${AppName}-proxy-2
+
+  ProxySubnet1RouteAssoc:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      SubnetId: !Ref ProxySubnet1
+      RouteTableId: !Ref PrivateRouteTable
+
+  ProxySubnet2RouteAssoc:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      SubnetId: !Ref ProxySubnet2
+      RouteTableId: !Ref PrivateRouteTable
 
   # ── Private Redis subnets ──────────────────────────────────────────────────
 
@@ -358,5 +396,9 @@ Outputs:
     Value: !Ref RedisSubnet1
   RedisSubnet2Id:
     Value: !Ref RedisSubnet2
+  ProxySubnet1Id:
+    Value: !Ref ProxySubnet1
+  ProxySubnet2Id:
+    Value: !Ref ProxySubnet2
   VPCEndpointSgId:
     Value: !Ref VPCEndpointSecurityGroup

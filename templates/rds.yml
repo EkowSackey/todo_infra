@@ -63,7 +63,6 @@ Resources:
 
   DBInstance:
     Type: AWS::RDS::DBInstance
-    DeletionPolicy: Snapshot
     Properties:
       DBInstanceIdentifier: !Sub ${EnvironmentName}-${AppName}-db
       DBInstanceClass: db.t3.micro
@@ -87,31 +86,6 @@ Resources:
           Value: !Ref EnvironmentName
         - Key: Project
           Value: !Ref AppName
-
-  # ── Secret–Instance Attachment ─────────────────────────────────────────────
-  # Links the secret to the instance so the rotation Lambda knows which DB to target.
-
-  DBSecretAttachment:
-    Type: AWS::SecretsManager::SecretTargetAttachment
-    Properties:
-      SecretId: !Ref DBSecret
-      TargetId: !Ref DBInstance
-      TargetType: AWS::RDS::DBInstance
-
-  # ── Rotation Schedule ──────────────────────────────────────────────────────
-
-  DBSecretRotationSchedule:
-    Type: AWS::SecretsManager::RotationSchedule
-    DependsOn: DBSecretAttachment
-    Properties:
-      SecretId: !Ref DBSecret
-      HostedRotationLambda:
-        RotationType: PostgreSQLSingleUser
-        RotationLambdaName: !Sub ${EnvironmentName}-${AppName}-db-rotation
-        VpcSecurityGroupIds: !Ref RdsSgId
-        VpcSubnetIds: !Sub ${RDSSubnet1Id},${RDSSubnet2Id}
-      RotationRules:
-        AutomaticallyAfterDays: 30
 
   # ── SSM Parameters ─────────────────────────────────────────────────────────
 
