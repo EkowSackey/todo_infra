@@ -190,6 +190,7 @@ Resources:
         ECRRepositoryUri: !GetAtt ECRStack.Outputs.ECRRepositoryUri
         ArtifactsBucketName: !GetAtt ECRStack.Outputs.ArtifactsBucketName
         LogGroupName: !GetAtt ECRStack.Outputs.LogGroupName
+        DBSecretArn: !GetAtt RDSStack.Outputs.DBSecretArn
       Tags:
         - Key: Environment
           Value: !Ref EnvironmentName
