@@ -1,0 +1,109 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: Todo App — ECR repository, S3 artifacts bucket, CloudWatch log group, SSM parameters
+
+Parameters:
+  EnvironmentName:
+    Type: String
+  AppName:
+    Type: String
+
+Resources:
+
+  # ── ECR Repository ─────────────────────────────────────────────────────────
+
+  ECRRepository:
+    Type: AWS::ECR::Repository
+    Properties:
+      RepositoryName: !Sub ${EnvironmentName}/${AppName}
+      ImageTagMutability: MUTABLE
+      ImageScanningConfiguration:
+        ScanOnPush: true
+      LifecyclePolicy:
+        LifecyclePolicyText: |
+          {
+            "rules": [
+              {
+                "rulePriority": 1,
+                "description": "Keep last 10 tagged images",
+                "selection": {
+                  "tagStatus": "tagged",
+                  "tagPrefixList": ["sha-"],
+                  "countType": "imageCountMoreThan",
+                  "countNumber": 10
+                },
+                "action": { "type": "expire" }
+              },
+              {
+                "rulePriority": 2,
+                "description": "Remove untagged images after 7 days",
+                "selection": {
+                  "tagStatus": "untagged",
+                  "countType": "sinceImagePushed",
+                  "countUnit": "days",
+                  "countNumber": 7
+                },
+                "action": { "type": "expire" }
+              }
+            ]
+          }
+
+  # ── S3 Artifacts Bucket ────────────────────────────────────────────────────
+  # Stores the CodeDeploy deploy bundle (appspec.yaml + taskdef.json).
+
+  ArtifactsBucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      BucketName: !Sub ${AppName}-artifacts-${EnvironmentName}-${AWS::AccountId}
+      VersioningConfiguration:
+        Status: Enabled
+      BucketEncryption:
+        ServerSideEncryptionConfiguration:
+          - ServerSideEncryptionByDefault:
+              SSEAlgorithm: AES256
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        BlockPublicPolicy: true
+        IgnorePublicAcls: true
+        RestrictPublicBuckets: true
+      Tags:
+        - Key: Environment
+          Value: !Ref EnvironmentName
+        - Key: Project
+          Value: !Ref AppName
+
+  # ── CloudWatch Log Group ───────────────────────────────────────────────────
+
+  AppLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub /ecs/${EnvironmentName}/${AppName}
+      RetentionInDays: 30
+
+  # ── SSM Parameters ─────────────────────────────────────────────────────────
+  # Published here so the CI workflow can look them up without querying CF exports.
+
+  SSMArtifactsBucketName:
+    Type: AWS::SSM::Parameter
+    Properties:
+      Name: !Sub /${AppName}/${EnvironmentName}/artifacts-bucket-name
+      Type: String
+      Value: !Ref ArtifactsBucket
+
+  SSMLogGroupName:
+    Type: AWS::SSM::Parameter
+    Properties:
+      Name: !Sub /${AppName}/${EnvironmentName}/log-group-name
+      Type: String
+      Value: !Ref AppLogGroup
+
+Outputs:
+  ECRRepositoryUri:
+    Value: !Sub ${AWS::AccountId}.dkr.ecr.${AWS::Region}.amazonaws.com/${ECRRepository}
+  ECRRepositoryArn:
+    Value: !GetAtt ECRRepository.Arn
+  ECRRepositoryName:
+    Value: !Ref ECRRepository
+  ArtifactsBucketName:
+    Value: !Ref ArtifactsBucket
+  LogGroupName:
+    Value: !Ref AppLogGroup

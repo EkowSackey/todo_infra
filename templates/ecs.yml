@@ -1,0 +1,258 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: Todo App — ECS cluster, ALB, task definition, and ECS service
+
+Parameters:
+  EnvironmentName:
+    Type: String
+  AppName:
+    Type: String
+  VpcId:
+    Type: AWS::EC2::VPC::Id
+  PublicSubnet1Id:
+    Type: AWS::EC2::Subnet::Id
+  PublicSubnet2Id:
+    Type: AWS::EC2::Subnet::Id
+  ECSSubnet1Id:
+    Type: AWS::EC2::Subnet::Id
+  ECSSubnet2Id:
+    Type: AWS::EC2::Subnet::Id
+  AlbSgId:
+    Type: AWS::EC2::SecurityGroup::Id
+  EcsSgId:
+    Type: AWS::EC2::SecurityGroup::Id
+  EcsTaskExecutionRoleArn:
+    Type: String
+  EcsTaskRoleArn:
+    Type: String
+  ECRRepositoryUri:
+    Type: String
+  ArtifactsBucketName:
+    Type: String
+  LogGroupName:
+    Type: String
+
+Resources:
+
+  # ── ECS Cluster ────────────────────────────────────────────────────────────
+
+  ECSCluster:
+    Type: AWS::ECS::Cluster
+    Properties:
+      ClusterName: !Sub ${EnvironmentName}-${AppName}-cluster
+      ClusterSettings:
+        - Name: containerInsights
+          Value: enabled
+      Tags:
+        - Key: Environment
+          Value: !Ref EnvironmentName
+        - Key: Project
+          Value: !Ref AppName
+
+  # ── Application Load Balancer ──────────────────────────────────────────────
+
+  ALB:
+    Type: AWS::ElasticLoadBalancingV2::LoadBalancer
+    Properties:
+      Name: !Sub ${EnvironmentName}-${AppName}-alb
+      Scheme: internet-facing
+      Type: application
+      Subnets:
+        - !Ref PublicSubnet1Id
+        - !Ref PublicSubnet2Id
+      SecurityGroups:
+        - !Ref AlbSgId
+      LoadBalancerAttributes:
+        - Key: access_logs.s3.enabled
+          Value: 'true'
+        - Key: access_logs.s3.bucket
+          Value: !Ref ArtifactsBucketName
+        - Key: access_logs.s3.prefix
+          Value: alb-logs
+      Tags:
+        - Key: Environment
+          Value: !Ref EnvironmentName
+        - Key: Project
+          Value: !Ref AppName
+
+  # ── Blue Target Group (production traffic on port 80) ──────────────────────
+
+  BlueTargetGroup:
+    Type: AWS::ElasticLoadBalancingV2::TargetGroup
+    Properties:
+      Name: !Sub ${EnvironmentName}-${AppName}-blue
+      VpcId: !Ref VpcId
+      Protocol: HTTP
+      Port: 8080
+      TargetType: ip
+      HealthCheckPath: /actuator/health
+      HealthCheckIntervalSeconds: 30
+      HealthCheckTimeoutSeconds: 5
+      HealthyThresholdCount: 2
+      UnhealthyThresholdCount: 3
+      Tags:
+        - Key: Environment
+          Value: !Ref EnvironmentName
+        - Key: Project
+          Value: !Ref AppName
+
+  # ── Green Target Group (test traffic on port 8080) ─────────────────────────
+
+  GreenTargetGroup:
+    Type: AWS::ElasticLoadBalancingV2::TargetGroup
+    Properties:
+      Name: !Sub ${EnvironmentName}-${AppName}-green
+      VpcId: !Ref VpcId
+      Protocol: HTTP
+      Port: 8080
+      TargetType: ip
+      HealthCheckPath: /actuator/health
+      HealthCheckIntervalSeconds: 30
+      HealthCheckTimeoutSeconds: 5
+      HealthyThresholdCount: 2
+      UnhealthyThresholdCount: 3
+      Tags:
+        - Key: Environment
+          Value: !Ref EnvironmentName
+        - Key: Project
+          Value: !Ref AppName
+
+  # ── ALB Listeners ──────────────────────────────────────────────────────────
+
+  ListenerProd:
+    Type: AWS::ElasticLoadBalancingV2::Listener
+    Properties:
+      LoadBalancerArn: !Ref ALB
+      Port: 80
+      Protocol: HTTP
+      DefaultActions:
+        - Type: forward
+          TargetGroupArn: !Ref BlueTargetGroup
+
+  ListenerTest:
+    Type: AWS::ElasticLoadBalancingV2::Listener
+    Properties:
+      LoadBalancerArn: !Ref ALB
+      Port: 8080
+      Protocol: HTTP
+      DefaultActions:
+        - Type: forward
+          TargetGroupArn: !Ref GreenTargetGroup
+
+  # ── ECS Task Definition ────────────────────────────────────────────────────
+  # Placeholder image — CodeDeploy replaces it with the real ECR URI at deploy time.
+  # Runtime config (DB_HOST, DB_NAME, REDIS_HOST, DB credentials) is resolved
+  # from SSM and Secrets Manager when the task starts; no CI-time injection needed.
+
+  TaskDefinition:
+    Type: AWS::ECS::TaskDefinition
+    Properties:
+      Family: !Sub ${EnvironmentName}-${AppName}
+      NetworkMode: awsvpc
+      RequiresCompatibilities:
+        - FARGATE
+      Cpu: '256'
+      Memory: '512'
+      ExecutionRoleArn: !Ref EcsTaskExecutionRoleArn
+      TaskRoleArn: !Ref EcsTaskRoleArn
+      ContainerDefinitions:
+        - Name: app
+          Image: !Sub ${ECRRepositoryUri}:latest
+          Essential: true
+          StopTimeout: 45
+          PortMappings:
+            - ContainerPort: 8080
+              Protocol: tcp
+          Environment:
+            - Name: DB_PORT
+              Value: '5432'
+            - Name: REDIS_PORT
+              Value: '6379'
+            - Name: JAVA_TOOL_OPTIONS
+              Value: '-XX:MaxRAMPercentage=75.0'
+          Secrets:
+            - Name: DB_HOST
+              ValueFrom: !Sub /${AppName}/${EnvironmentName}/proxy-endpoint
+            - Name: DB_NAME
+              ValueFrom: !Sub /${AppName}/${EnvironmentName}/db-name
+            - Name: DB_USER
+              ValueFrom: !Sub
+                - '${SecretArn}:username::'
+                - SecretArn: !Sub arn:aws:secretsmanager:${AWS::Region}:${AWS::AccountId}:secret:/todo/${EnvironmentName}/db-secret
+            - Name: DB_PASSWORD
+              ValueFrom: !Sub
+                - '${SecretArn}:password::'
+                - SecretArn: !Sub arn:aws:secretsmanager:${AWS::Region}:${AWS::AccountId}:secret:/todo/${EnvironmentName}/db-secret
+            - Name: REDIS_HOST
+              ValueFrom: !Sub /${AppName}/${EnvironmentName}/redis-endpoint
+          HealthCheck:
+            Command:
+              - CMD-SHELL
+              - curl -f http://localhost:8080/actuator/health || exit 1
+            Interval: 30
+            Timeout: 5
+            Retries: 3
+            StartPeriod: 60
+          LogConfiguration:
+            LogDriver: awslogs
+            Options:
+              awslogs-group: !Ref LogGroupName
+              awslogs-region: !Ref AWS::Region
+              awslogs-stream-prefix: ecs
+
+  # ── ECS Service ────────────────────────────────────────────────────────────
+  # DeploymentController CODE_DEPLOY: CodeDeploy manages all traffic shifts.
+  # Do not change DesiredCount or DeploymentConfiguration here — CodeDeploy owns them.
+
+  ECSService:
+    Type: AWS::ECS::Service
+    DependsOn:
+      - ListenerProd
+      - ListenerTest
+    Properties:
+      ServiceName: !Sub ${EnvironmentName}-${AppName}-service
+      Cluster: !Ref ECSCluster
+      TaskDefinition: !Ref TaskDefinition
+      DesiredCount: 1
+      LaunchType: FARGATE
+      NetworkConfiguration:
+        AwsvpcConfiguration:
+          AssignPublicIp: DISABLED
+          Subnets:
+            - !Ref ECSSubnet1Id
+            - !Ref ECSSubnet2Id
+          SecurityGroups:
+            - !Ref EcsSgId
+      LoadBalancers:
+        - ContainerName: app
+          ContainerPort: 8080
+          TargetGroupArn: !Ref BlueTargetGroup
+      DeploymentController:
+        Type: CODE_DEPLOY
+      HealthCheckGracePeriodSeconds: 120
+      Tags:
+        - Key: Environment
+          Value: !Ref EnvironmentName
+        - Key: Project
+          Value: !Ref AppName
+
+Outputs:
+  ClusterName:
+    Value: !Ref ECSCluster
+  ServiceName:
+    Value: !GetAtt ECSService.Name
+  ALBDNSName:
+    Value: !GetAtt ALB.DNSName
+  ALBArn:
+    Value: !Ref ALB
+  BlueTargetGroupArn:
+    Value: !Ref BlueTargetGroup
+  BlueTargetGroupName:
+    Value: !GetAtt BlueTargetGroup.TargetGroupName
+  GreenTargetGroupArn:
+    Value: !Ref GreenTargetGroup
+  GreenTargetGroupName:
+    Value: !GetAtt GreenTargetGroup.TargetGroupName
+  ListenerProdArn:
+    Value: !Ref ListenerProd
+  ListenerTestArn:
+    Value: !Ref ListenerTest

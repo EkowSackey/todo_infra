@@ -1,0 +1,164 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: Todo App — CodeDeploy, CodePipeline, and EventBridge trigger
+
+Parameters:
+  EnvironmentName:
+    Type: String
+  AppName:
+    Type: String
+  ClusterName:
+    Type: String
+  ServiceName:
+    Type: String
+  BlueTargetGroupName:
+    Type: String
+  GreenTargetGroupName:
+    Type: String
+  ListenerProdArn:
+    Type: String
+  ListenerTestArn:
+    Type: String
+  ECRRepositoryName:
+    Type: String
+  ArtifactsBucketName:
+    Type: String
+  CodeDeployRoleArn:
+    Type: String
+  CodePipelineRoleArn:
+    Type: String
+  EventBridgeRoleArn:
+    Type: String
+
+Resources:
+
+  # ── CodeDeploy Application ─────────────────────────────────────────────────
+
+  CodeDeployApp:
+    Type: AWS::CodeDeploy::Application
+    Properties:
+      ApplicationName: !Sub ${EnvironmentName}-${AppName}-app
+      ComputePlatform: ECS
+
+  # ── CodeDeploy Deployment Group ────────────────────────────────────────────
+  # Blue/green: traffic shifts from BlueTargetGroup to GreenTargetGroup.
+  # Auto-rollback on deployment failure. Termination wait gives time for
+  # health checks and (optionally) manual validation before the blue fleet is torn down.
+
+  CodeDeployDeploymentGroup:
+    Type: AWS::CodeDeploy::DeploymentGroup
+    Properties:
+      ApplicationName: !Ref CodeDeployApp
+      DeploymentGroupName: !Sub ${EnvironmentName}-${AppName}-dg
+      ServiceRoleArn: !Ref CodeDeployRoleArn
+      DeploymentConfigName: CodeDeployDefault.ECSAllAtOnce
+      DeploymentStyle:
+        DeploymentType: BLUE_GREEN
+        DeploymentOption: WITH_TRAFFIC_CONTROL
+      BlueGreenDeploymentConfiguration:
+        TerminateBlueInstancesOnDeploymentSuccess:
+          Action: TERMINATE
+          TerminationWaitTimeInMinutes: 15
+        DeploymentReadyOption:
+          ActionOnTimeout: CONTINUE_DEPLOYMENT
+      ECSServices:
+        - ClusterName: !Ref ClusterName
+          ServiceName: !Ref ServiceName
+      LoadBalancerInfo:
+        TargetGroupPairInfoList:
+          - ProdTrafficRoute:
+              ListenerArns:
+                - !Ref ListenerProdArn
+            TestTrafficRoute:
+              ListenerArns:
+                - !Ref ListenerTestArn
+            TargetGroups:
+              - Name: !Ref BlueTargetGroupName
+              - Name: !Ref GreenTargetGroupName
+      AutoRollbackConfiguration:
+        Enabled: true
+        Events:
+          - DEPLOYMENT_FAILURE
+
+  # ── CodePipeline ───────────────────────────────────────────────────────────
+  # Source: S3 (deploy bundle pushed by GitHub Actions CI).
+  # Deploy: CodeDeploy blue/green.
+
+  Pipeline:
+    Type: AWS::CodePipeline::Pipeline
+    Properties:
+      Name: !Sub ${EnvironmentName}-${AppName}-pipeline
+      RoleArn: !Ref CodePipelineRoleArn
+      ArtifactStore:
+        Type: S3
+        Location: !Ref ArtifactsBucketName
+      Stages:
+        - Name: Source
+          Actions:
+            - Name: BundleSource
+              ActionTypeId:
+                Category: Source
+                Owner: AWS
+                Provider: S3
+                Version: '1'
+              Configuration:
+                S3Bucket: !Ref ArtifactsBucketName
+                S3ObjectKey: deploy-bundle/bundle.zip
+                PollForSourceChanges: false
+              OutputArtifacts:
+                - Name: SourceArtifact
+              RunOrder: 1
+        - Name: Deploy
+          Actions:
+            - Name: BlueGreenDeploy
+              ActionTypeId:
+                Category: Deploy
+                Owner: AWS
+                Provider: CodeDeployToECS
+                Version: '1'
+              Configuration:
+                ApplicationName: !Ref CodeDeployApp
+                DeploymentGroupName: !Ref CodeDeployDeploymentGroup
+                TaskDefinitionTemplateArtifact: SourceArtifact
+                AppSpecTemplateArtifact: SourceArtifact
+                TaskDefinitionTemplatePath: taskdef.json
+                AppSpecTemplatePath: appspec.yaml
+                Image1ArtifactName: SourceArtifact
+                Image1ContainerName: IMAGE1_NAME
+              InputArtifacts:
+                - Name: SourceArtifact
+              RunOrder: 1
+
+  # ── EventBridge Rule ───────────────────────────────────────────────────────
+  # Detects when a new image tagged 'latest' is pushed to ECR and starts
+  # CodePipeline — so every successful CI push triggers a blue/green deployment.
+
+  ECRPushEventRule:
+    Type: AWS::Events::Rule
+    Properties:
+      Name: !Sub ${EnvironmentName}-${AppName}-ecr-push
+      Description: Trigger CodePipeline on ECR image push (latest tag)
+      EventPattern:
+        source:
+          - aws.ecr
+        detail-type:
+          - ECR Image Action
+        detail:
+          action-type:
+            - PUSH
+          image-tag:
+            - latest
+          repository-name:
+            - !Ref ECRRepositoryName
+      State: ENABLED
+      Targets:
+        - Id: CodePipelineTarget
+          Arn: !Sub arn:aws:codepipeline:${AWS::Region}:${AWS::AccountId}:${Pipeline}
+          RoleArn: !Ref EventBridgeRoleArn
+
+Outputs:
+  PipelineArn:
+    Value: !Sub arn:aws:codepipeline:${AWS::Region}:${AWS::AccountId}:${Pipeline}
+  CodeDeployAppName:
+    Value: !Ref CodeDeployApp
+  DeploymentGroupName:
+    Value: !Ref CodeDeployDeploymentGroup

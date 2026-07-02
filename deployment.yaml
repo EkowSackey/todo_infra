@@ -1,0 +1,15 @@
+template-file-path: infra/root.yml
+
+parameters:
+  EnvironmentName: prod
+  TemplatesBucket: todo-cfn-templates-593793048595
+  TemplatesPrefix: templates
+  AppName: todo
+  GitHubOrg: EkowSackey
+  GitHubRepo: todo_app
+  CreateOIDCProvider: 'false'
+
+tags:
+  Environment: prod
+  Project: todo-app
+  ManagedBy: CloudFormation-GitSync

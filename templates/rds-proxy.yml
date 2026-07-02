@@ -1,0 +1,99 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: Todo App — RDS Proxy (sits between ECS tasks and the RDS instance)
+
+Parameters:
+  EnvironmentName:
+    Type: String
+  AppName:
+    Type: String
+  RDSSubnet1Id:
+    Type: AWS::EC2::Subnet::Id
+  RDSSubnet2Id:
+    Type: AWS::EC2::Subnet::Id
+  RdsProxySgId:
+    Type: AWS::EC2::SecurityGroup::Id
+  DBSecretArn:
+    Type: String
+  DBInstanceIdentifier:
+    Type: String
+
+Resources:
+
+  # ── IAM Role for RDS Proxy ─────────────────────────────────────────────────
+  # Allows the proxy to retrieve credentials from Secrets Manager.
+
+  RDSProxyRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub ${EnvironmentName}-${AppName}-rds-proxy-role
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: rds.amazonaws.com
+            Action: sts:AssumeRole
+      Policies:
+        - PolicyName: SecretsManagerAccess
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - secretsmanager:GetSecretValue
+                  - secretsmanager:DescribeSecret
+                Resource: !Ref DBSecretArn
+
+  # ── RDS Proxy ──────────────────────────────────────────────────────────────
+
+  DBProxy:
+    Type: AWS::RDS::DBProxy
+    Properties:
+      DBProxyName: !Sub ${EnvironmentName}-${AppName}-proxy
+      EngineFamily: POSTGRESQL
+      RoleArn: !GetAtt RDSProxyRole.Arn
+      Auth:
+        - AuthScheme: SECRETS
+          SecretArn: !Ref DBSecretArn
+          IAMAuth: DISABLED
+      VpcSubnetIds:
+        - !Ref RDSSubnet1Id
+        - !Ref RDSSubnet2Id
+      VpcSecurityGroupIds:
+        - !Ref RdsProxySgId
+      RequireTLS: false
+      IdleClientTimeout: 1800
+      Tags:
+        - Key: Environment
+          Value: !Ref EnvironmentName
+        - Key: Project
+          Value: !Ref AppName
+
+  # ── Proxy Target Group ─────────────────────────────────────────────────────
+
+  DBProxyTargetGroup:
+    Type: AWS::RDS::DBProxyTargetGroup
+    Properties:
+      DBProxyName: !Ref DBProxy
+      TargetGroupName: default
+      DBInstanceIdentifiers:
+        - !Ref DBInstanceIdentifier
+      ConnectionPoolConfigurationInfo:
+        MaxConnectionsPercent: 80
+        MaxIdleConnectionsPercent: 50
+        ConnectionBorrowTimeout: 120
+
+  # ── SSM Parameter ──────────────────────────────────────────────────────────
+
+  SSMProxyEndpoint:
+    Type: AWS::SSM::Parameter
+    Properties:
+      Name: !Sub /${AppName}/${EnvironmentName}/proxy-endpoint
+      Type: String
+      Value: !GetAtt DBProxy.Endpoint
+
+Outputs:
+  DBProxyEndpoint:
+    Value: !GetAtt DBProxy.Endpoint
+  DBProxyArn:
+    Value: !GetAtt DBProxy.DBProxyArn

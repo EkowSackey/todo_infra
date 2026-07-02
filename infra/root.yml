@@ -1,0 +1,243 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: Todo App — root stack (orchestrates all nested stacks)
+
+Parameters:
+  EnvironmentName:
+    Type: String
+    Default: prod
+  AppName:
+    Type: String
+    Default: todo
+  TemplatesBucket:
+    Type: String
+  TemplatesPrefix:
+    Type: String
+    Default: templates
+  GitHubOrg:
+    Type: String
+  GitHubRepo:
+    Type: String
+  CreateOIDCProvider:
+    Type: String
+    Default: 'false'
+    AllowedValues: ['true', 'false']
+
+Resources:
+
+  # ── Independent stacks ─────────────────────────────────────────────────────
+
+  ECRStack:
+    Type: AWS::CloudFormation::Stack
+    Properties:
+      TemplateURL: !Sub https://${TemplatesBucket}.s3.amazonaws.com/${TemplatesPrefix}/ecr.yml
+      Parameters:
+        EnvironmentName: !Ref EnvironmentName
+        AppName: !Ref AppName
+      Tags:
+        - Key: Environment
+          Value: !Ref EnvironmentName
+        - Key: Project
+          Value: !Ref AppName
+
+  # ── Network layer ──────────────────────────────────────────────────────────
+
+  VPCStack:
+    Type: AWS::CloudFormation::Stack
+    Properties:
+      TemplateURL: !Sub https://${TemplatesBucket}.s3.amazonaws.com/${TemplatesPrefix}/vpc.yml
+      Parameters:
+        EnvironmentName: !Ref EnvironmentName
+        AppName: !Ref AppName
+      Tags:
+        - Key: Environment
+          Value: !Ref EnvironmentName
+        - Key: Project
+          Value: !Ref AppName
+
+  SecurityGroupsStack:
+    Type: AWS::CloudFormation::Stack
+    DependsOn: VPCStack
+    Properties:
+      TemplateURL: !Sub https://${TemplatesBucket}.s3.amazonaws.com/${TemplatesPrefix}/security-groups.yml
+      Parameters:
+        EnvironmentName: !Ref EnvironmentName
+        AppName: !Ref AppName
+        VpcId: !GetAtt VPCStack.Outputs.VpcId
+      Tags:
+        - Key: Environment
+          Value: !Ref EnvironmentName
+        - Key: Project
+          Value: !Ref AppName
+
+  # ── IAM layer ──────────────────────────────────────────────────────────────
+
+  IAMStack:
+    Type: AWS::CloudFormation::Stack
+    DependsOn: ECRStack
+    Properties:
+      TemplateURL: !Sub https://${TemplatesBucket}.s3.amazonaws.com/${TemplatesPrefix}/iam.yml
+      Parameters:
+        EnvironmentName: !Ref EnvironmentName
+        AppName: !Ref AppName
+        ArtifactsBucketName: !GetAtt ECRStack.Outputs.ArtifactsBucketName
+        ECRRepositoryArn: !GetAtt ECRStack.Outputs.ECRRepositoryArn
+      Tags:
+        - Key: Environment
+          Value: !Ref EnvironmentName
+        - Key: Project
+          Value: !Ref AppName
+
+  GithubOIDCStack:
+    Type: AWS::CloudFormation::Stack
+    DependsOn: [ECRStack, IAMStack]
+    Properties:
+      TemplateURL: !Sub https://${TemplatesBucket}.s3.amazonaws.com/${TemplatesPrefix}/github-oidc.yml
+      Parameters:
+        EnvironmentName: !Ref EnvironmentName
+        AppName: !Ref AppName
+        GitHubOrg: !Ref GitHubOrg
+        GitHubRepo: !Ref GitHubRepo
+        CreateOIDCProvider: !Ref CreateOIDCProvider
+        ArtifactsBucketName: !GetAtt ECRStack.Outputs.ArtifactsBucketName
+        ECRRepositoryArn: !GetAtt ECRStack.Outputs.ECRRepositoryArn
+      Tags:
+        - Key: Environment
+          Value: !Ref EnvironmentName
+        - Key: Project
+          Value: !Ref AppName
+
+  # ── Data layer ─────────────────────────────────────────────────────────────
+
+  RDSStack:
+    Type: AWS::CloudFormation::Stack
+    DependsOn: [VPCStack, SecurityGroupsStack]
+    Properties:
+      TemplateURL: !Sub https://${TemplatesBucket}.s3.amazonaws.com/${TemplatesPrefix}/rds.yml
+      Parameters:
+        EnvironmentName: !Ref EnvironmentName
+        AppName: !Ref AppName
+        RDSSubnet1Id: !GetAtt VPCStack.Outputs.RDSSubnet1Id
+        RDSSubnet2Id: !GetAtt VPCStack.Outputs.RDSSubnet2Id
+        RdsSgId: !GetAtt SecurityGroupsStack.Outputs.RdsSgId
+      Tags:
+        - Key: Environment
+          Value: !Ref EnvironmentName
+        - Key: Project
+          Value: !Ref AppName
+
+  RDSProxyStack:
+    Type: AWS::CloudFormation::Stack
+    DependsOn: [VPCStack, SecurityGroupsStack, RDSStack]
+    Properties:
+      TemplateURL: !Sub https://${TemplatesBucket}.s3.amazonaws.com/${TemplatesPrefix}/rds-proxy.yml
+      Parameters:
+        EnvironmentName: !Ref EnvironmentName
+        AppName: !Ref AppName
+        RDSSubnet1Id: !GetAtt VPCStack.Outputs.RDSSubnet1Id
+        RDSSubnet2Id: !GetAtt VPCStack.Outputs.RDSSubnet2Id
+        RdsProxySgId: !GetAtt SecurityGroupsStack.Outputs.RdsProxySgId
+        DBSecretArn: !GetAtt RDSStack.Outputs.DBSecretArn
+        DBInstanceIdentifier: !GetAtt RDSStack.Outputs.DBInstanceIdentifier
+      Tags:
+        - Key: Environment
+          Value: !Ref EnvironmentName
+        - Key: Project
+          Value: !Ref AppName
+
+  RedisStack:
+    Type: AWS::CloudFormation::Stack
+    DependsOn: [VPCStack, SecurityGroupsStack]
+    Properties:
+      TemplateURL: !Sub https://${TemplatesBucket}.s3.amazonaws.com/${TemplatesPrefix}/redis.yml
+      Parameters:
+        EnvironmentName: !Ref EnvironmentName
+        AppName: !Ref AppName
+        RedisSubnet1Id: !GetAtt VPCStack.Outputs.RedisSubnet1Id
+        RedisSubnet2Id: !GetAtt VPCStack.Outputs.RedisSubnet2Id
+        RedisSgId: !GetAtt SecurityGroupsStack.Outputs.RedisSgId
+      Tags:
+        - Key: Environment
+          Value: !Ref EnvironmentName
+        - Key: Project
+          Value: !Ref AppName
+
+  # ── Compute layer ──────────────────────────────────────────────────────────
+
+  ECSStack:
+    Type: AWS::CloudFormation::Stack
+    DependsOn:
+      - VPCStack
+      - SecurityGroupsStack
+      - IAMStack
+      - RDSStack
+      - RDSProxyStack
+      - RedisStack
+      - ECRStack
+    Properties:
+      TemplateURL: !Sub https://${TemplatesBucket}.s3.amazonaws.com/${TemplatesPrefix}/ecs.yml
+      Parameters:
+        EnvironmentName: !Ref EnvironmentName
+        AppName: !Ref AppName
+        VpcId: !GetAtt VPCStack.Outputs.VpcId
+        PublicSubnet1Id: !GetAtt VPCStack.Outputs.PublicSubnet1Id
+        PublicSubnet2Id: !GetAtt VPCStack.Outputs.PublicSubnet2Id
+        ECSSubnet1Id: !GetAtt VPCStack.Outputs.ECSSubnet1Id
+        ECSSubnet2Id: !GetAtt VPCStack.Outputs.ECSSubnet2Id
+        AlbSgId: !GetAtt SecurityGroupsStack.Outputs.AlbSgId
+        EcsSgId: !GetAtt SecurityGroupsStack.Outputs.EcsSgId
+        EcsTaskExecutionRoleArn: !GetAtt IAMStack.Outputs.EcsTaskExecutionRoleArn
+        EcsTaskRoleArn: !GetAtt IAMStack.Outputs.EcsTaskRoleArn
+        ECRRepositoryUri: !GetAtt ECRStack.Outputs.ECRRepositoryUri
+        ArtifactsBucketName: !GetAtt ECRStack.Outputs.ArtifactsBucketName
+        LogGroupName: !GetAtt ECRStack.Outputs.LogGroupName
+      Tags:
+        - Key: Environment
+          Value: !Ref EnvironmentName
+        - Key: Project
+          Value: !Ref AppName
+
+  AutoScalingStack:
+    Type: AWS::CloudFormation::Stack
+    DependsOn: ECSStack
+    Properties:
+      TemplateURL: !Sub https://${TemplatesBucket}.s3.amazonaws.com/${TemplatesPrefix}/autoscaling.yml
+      Parameters:
+        EnvironmentName: !Ref EnvironmentName
+        AppName: !Ref AppName
+        ClusterName: !GetAtt ECSStack.Outputs.ClusterName
+        ServiceName: !GetAtt ECSStack.Outputs.ServiceName
+      Tags:
+        - Key: Environment
+          Value: !Ref EnvironmentName
+        - Key: Project
+          Value: !Ref AppName
+
+  PipelineStack:
+    Type: AWS::CloudFormation::Stack
+    DependsOn: [ECSStack, ECRStack, IAMStack]
+    Properties:
+      TemplateURL: !Sub https://${TemplatesBucket}.s3.amazonaws.com/${TemplatesPrefix}/pipeline.yml
+      Parameters:
+        EnvironmentName: !Ref EnvironmentName
+        AppName: !Ref AppName
+        ClusterName: !GetAtt ECSStack.Outputs.ClusterName
+        ServiceName: !GetAtt ECSStack.Outputs.ServiceName
+        BlueTargetGroupName: !GetAtt ECSStack.Outputs.BlueTargetGroupName
+        GreenTargetGroupName: !GetAtt ECSStack.Outputs.GreenTargetGroupName
+        ListenerProdArn: !GetAtt ECSStack.Outputs.ListenerProdArn
+        ListenerTestArn: !GetAtt ECSStack.Outputs.ListenerTestArn
+        ECRRepositoryName: !GetAtt ECRStack.Outputs.ECRRepositoryName
+        ArtifactsBucketName: !GetAtt ECRStack.Outputs.ArtifactsBucketName
+        CodeDeployRoleArn: !GetAtt IAMStack.Outputs.CodeDeployRoleArn
+        CodePipelineRoleArn: !GetAtt IAMStack.Outputs.CodePipelineRoleArn
+        EventBridgeRoleArn: !GetAtt IAMStack.Outputs.EventBridgeRoleArn
+      Tags:
+        - Key: Environment
+          Value: !Ref EnvironmentName
+        - Key: Project
+          Value: !Ref AppName
+
+Outputs:
+  ALBDNSName:
+    Description: Application Load Balancer DNS name
+    Value: !GetAtt ECSStack.Outputs.ALBDNSName

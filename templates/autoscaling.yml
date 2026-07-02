@@ -1,0 +1,43 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: Todo App — ECS auto scaling (CPU-based, 1–4 tasks)
+
+Parameters:
+  EnvironmentName:
+    Type: String
+  AppName:
+    Type: String
+  ClusterName:
+    Type: String
+  ServiceName:
+    Type: String
+
+Resources:
+
+  # ── Scalable Target ────────────────────────────────────────────────────────
+
+  ScalableTarget:
+    Type: AWS::ApplicationAutoScaling::ScalableTarget
+    Properties:
+      MinCapacity: 1
+      MaxCapacity: 4
+      ResourceId: !Sub service/${ClusterName}/${ServiceName}
+      ScalableDimension: ecs:service:DesiredCount
+      ServiceNamespace: ecs
+      RoleARN: !Sub arn:aws:iam::${AWS::AccountId}:role/aws-service-role/ecs.application-autoscaling.amazonaws.com/AWSServiceRoleForApplicationAutoScaling_ECSService
+
+  # ── CPU Target Tracking Policy ─────────────────────────────────────────────
+  # Scales out when average CPU > 60%, scales in when it drops below.
+  # Scale-out cooldown: 60s (responsive); scale-in cooldown: 300s (conservative).
+
+  CPUScalingPolicy:
+    Type: AWS::ApplicationAutoScaling::ScalingPolicy
+    Properties:
+      PolicyName: !Sub ${EnvironmentName}-${AppName}-cpu-scaling
+      PolicyType: TargetTrackingScaling
+      ScalingTargetId: !Ref ScalableTarget
+      TargetTrackingScalingPolicyConfiguration:
+        TargetValue: 60.0
+        PredefinedMetricSpecification:
+          PredefinedMetricType: ECSServiceAverageCPUUtilization
+        ScaleInCooldown: 300
+        ScaleOutCooldown: 60

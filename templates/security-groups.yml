@@ -1,0 +1,160 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: Todo App — security groups (one per resource type)
+
+Parameters:
+  EnvironmentName:
+    Type: String
+  AppName:
+    Type: String
+  VpcId:
+    Type: AWS::EC2::VPC::Id
+
+Resources:
+
+  # ── ALB Security Group ─────────────────────────────────────────────────────
+  # Accepts HTTP on 80 (production) and 8080 (test/green listener) from the internet.
+
+  AlbSg:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: ALB — internet-facing HTTP
+      VpcId: !Ref VpcId
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: 80
+          ToPort: 80
+          CidrIp: '0.0.0.0/0'
+          Description: HTTP production listener
+        - IpProtocol: tcp
+          FromPort: 8080
+          ToPort: 8080
+          CidrIp: '0.0.0.0/0'
+          Description: HTTP test listener (blue/green)
+      Tags:
+        - Key: Name
+          Value: !Sub ${EnvironmentName}-${AppName}-alb-sg
+
+  # ── ECS Security Group ─────────────────────────────────────────────────────
+  # Accepts traffic only from the ALB. Outbound to RDS Proxy, Redis, and
+  # AWS service endpoints.
+
+  EcsSg:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: ECS Fargate tasks
+      VpcId: !Ref VpcId
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: 8080
+          ToPort: 8080
+          SourceSecurityGroupId: !Ref AlbSg
+          Description: Traffic from ALB
+      Tags:
+        - Key: Name
+          Value: !Sub ${EnvironmentName}-${AppName}-ecs-sg
+
+  EcsSgEgressProxy:
+    Type: AWS::EC2::SecurityGroupEgress
+    Properties:
+      GroupId: !Ref EcsSg
+      IpProtocol: tcp
+      FromPort: 5432
+      ToPort: 5432
+      DestinationSecurityGroupId: !Ref RdsProxySg
+      Description: RDS Proxy
+
+  EcsSgEgressRedis:
+    Type: AWS::EC2::SecurityGroupEgress
+    Properties:
+      GroupId: !Ref EcsSg
+      IpProtocol: tcp
+      FromPort: 6379
+      ToPort: 6379
+      DestinationSecurityGroupId: !Ref RedisSg
+      Description: ElastiCache Redis
+
+  EcsSgEgressHttps:
+    Type: AWS::EC2::SecurityGroupEgress
+    Properties:
+      GroupId: !Ref EcsSg
+      IpProtocol: tcp
+      FromPort: 443
+      ToPort: 443
+      CidrIp: '0.0.0.0/0'
+      Description: HTTPS to AWS endpoints and internet
+
+  # ── RDS Security Group ─────────────────────────────────────────────────────
+  # Accepts connections from the RDS Proxy only (not directly from ECS).
+
+  RdsSg:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: RDS PostgreSQL instance
+      VpcId: !Ref VpcId
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: 5432
+          ToPort: 5432
+          SourceSecurityGroupId: !Ref RdsProxySg
+          Description: From RDS Proxy
+      Tags:
+        - Key: Name
+          Value: !Sub ${EnvironmentName}-${AppName}-rds-sg
+
+  # ── RDS Proxy Security Group ───────────────────────────────────────────────
+  # Accepts connections from ECS tasks; forwards to RDS.
+
+  RdsProxySg:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: RDS Proxy
+      VpcId: !Ref VpcId
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: 5432
+          ToPort: 5432
+          SourceSecurityGroupId: !Ref EcsSg
+          Description: From ECS tasks
+      Tags:
+        - Key: Name
+          Value: !Sub ${EnvironmentName}-${AppName}-rds-proxy-sg
+
+  RdsProxySgEgressRds:
+    Type: AWS::EC2::SecurityGroupEgress
+    Properties:
+      GroupId: !Ref RdsProxySg
+      IpProtocol: tcp
+      FromPort: 5432
+      ToPort: 5432
+      DestinationSecurityGroupId: !Ref RdsSg
+      Description: To RDS instance
+
+  # ── Redis Security Group ───────────────────────────────────────────────────
+  # Accepts connections from ECS tasks only.
+
+  RedisSg:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: ElastiCache Redis
+      VpcId: !Ref VpcId
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: 6379
+          ToPort: 6379
+          SourceSecurityGroupId: !Ref EcsSg
+          Description: From ECS tasks
+      Tags:
+        - Key: Name
+          Value: !Sub ${EnvironmentName}-${AppName}-redis-sg
+
+Outputs:
+  AlbSgId:
+    Value: !Ref AlbSg
+  EcsSgId:
+    Value: !Ref EcsSg
+  RdsSgId:
+    Value: !Ref RdsSg
+  RdsProxySgId:
+    Value: !Ref RdsProxySg
+  RedisSgId:
+    Value: !Ref RedisSg

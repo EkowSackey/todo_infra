@@ -1,0 +1,93 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: Todo App — GitHub OIDC provider and GitHub Actions IAM role
+
+Parameters:
+  EnvironmentName:
+    Type: String
+  AppName:
+    Type: String
+  GitHubOrg:
+    Type: String
+  GitHubRepo:
+    Type: String
+  CreateOIDCProvider:
+    Type: String
+    Default: 'false'
+    AllowedValues: ['true', 'false']
+  ArtifactsBucketName:
+    Type: String
+  ECRRepositoryArn:
+    Type: String
+
+Conditions:
+  ShouldCreateOIDCProvider: !Equals [!Ref CreateOIDCProvider, 'true']
+
+Resources:
+
+  # ── GitHub OIDC Provider ───────────────────────────────────────────────────
+  # Only created when CreateOIDCProvider=true. Set to false when the provider
+  # already exists in the account (one OIDC provider per issuer per account).
+
+  GitHubOIDCProvider:
+    Type: AWS::IAM::OIDCProvider
+    Condition: ShouldCreateOIDCProvider
+    Properties:
+      Url: https://token.actions.githubusercontent.com
+      ClientIdList:
+        - sts.amazonaws.com
+      ThumbprintList:
+        - 6938fd4d98bab03faadb97b34396831e3780aea1
+
+  # ── GitHub Actions Role ────────────────────────────────────────────────────
+  # Trust policy scoped to pushes to main only (StringEquals, not StringLike).
+  # Permissions: push to ECR, write deploy bundle to S3, read SSM params.
+
+  GitHubActionsRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub ${EnvironmentName}-${AppName}-github-actions-role
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Federated: !Sub arn:aws:iam::${AWS::AccountId}:oidc-provider/token.actions.githubusercontent.com
+            Action: sts:AssumeRoleWithWebIdentity
+            Condition:
+              StringEquals:
+                token.actions.githubusercontent.com:aud: sts.amazonaws.com
+                token.actions.githubusercontent.com:sub: !Sub repo:${GitHubOrg}/${GitHubRepo}:ref:refs/heads/main
+      Policies:
+        - PolicyName: GitHubActionsPermissions
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Sid: ECRAuth
+                Effect: Allow
+                Action: ecr:GetAuthorizationToken
+                Resource: '*'
+              - Sid: ECRPush
+                Effect: Allow
+                Action:
+                  - ecr:BatchCheckLayerAvailability
+                  - ecr:CompleteLayerUpload
+                  - ecr:InitiateLayerUpload
+                  - ecr:PutImage
+                  - ecr:UploadLayerPart
+                  - ecr:BatchGetImage
+                  - ecr:GetDownloadUrlForLayer
+                Resource: !Ref ECRRepositoryArn
+              - Sid: S3DeployBundle
+                Effect: Allow
+                Action:
+                  - s3:PutObject
+                  - s3:GetObject
+                Resource: !Sub arn:aws:s3:::${ArtifactsBucketName}/deploy-bundle/*
+              - Sid: SSMLookup
+                Effect: Allow
+                Action: ssm:GetParameter
+                Resource: !Sub arn:aws:ssm:${AWS::Region}:${AWS::AccountId}:parameter/todo/${EnvironmentName}/*
+
+Outputs:
+  GitHubActionsRoleArn:
+    Value: !GetAtt GitHubActionsRole.Arn

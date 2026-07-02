@@ -1,0 +1,76 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: Todo App — ElastiCache Redis (single-node, cluster mode disabled)
+
+Parameters:
+  EnvironmentName:
+    Type: String
+  AppName:
+    Type: String
+  RedisSubnet1Id:
+    Type: AWS::EC2::Subnet::Id
+  RedisSubnet2Id:
+    Type: AWS::EC2::Subnet::Id
+  RedisSgId:
+    Type: AWS::EC2::SecurityGroup::Id
+
+Resources:
+
+  # ── Subnet Group ───────────────────────────────────────────────────────────
+
+  RedisSubnetGroup:
+    Type: AWS::ElastiCache::SubnetGroup
+    Properties:
+      CacheSubnetGroupName: !Sub ${EnvironmentName}-${AppName}-redis-subnet-group
+      Description: !Sub ${EnvironmentName}-${AppName} Redis subnets
+      SubnetIds:
+        - !Ref RedisSubnet1Id
+        - !Ref RedisSubnet2Id
+
+  # ── Parameter Group ────────────────────────────────────────────────────────
+
+  RedisParameterGroup:
+    Type: AWS::ElastiCache::ParameterGroup
+    Properties:
+      CacheParameterGroupFamily: redis7
+      Description: !Sub ${EnvironmentName}-${AppName} Redis 7 parameters
+
+  # ── Replication Group (single node) ───────────────────────────────────────
+  # Cluster mode is disabled — Spring uses a single host:port endpoint.
+  # NumCacheClusters=1 means one primary node, no replicas (cost-optimised for lab).
+
+  RedisReplicationGroup:
+    Type: AWS::ElastiCache::ReplicationGroup
+    Properties:
+      ReplicationGroupDescription: !Sub ${EnvironmentName}-${AppName} Redis cache
+      ReplicationGroupId: !Sub ${EnvironmentName}-${AppName}-redis
+      CacheNodeType: cache.t3.micro
+      Engine: redis
+      EngineVersion: '7.1'
+      CacheParameterGroupName: !Ref RedisParameterGroup
+      CacheSubnetGroupName: !Ref RedisSubnetGroup
+      SecurityGroupIds:
+        - !Ref RedisSgId
+      NumCacheClusters: 1
+      AutomaticFailoverEnabled: false
+      AtRestEncryptionEnabled: true
+      TransitEncryptionEnabled: false
+      Tags:
+        - Key: Environment
+          Value: !Ref EnvironmentName
+        - Key: Project
+          Value: !Ref AppName
+
+  # ── SSM Parameter ──────────────────────────────────────────────────────────
+
+  SSMRedisEndpoint:
+    Type: AWS::SSM::Parameter
+    Properties:
+      Name: !Sub /${AppName}/${EnvironmentName}/redis-endpoint
+      Type: String
+      Value: !GetAtt RedisReplicationGroup.PrimaryEndPoint.Address
+
+Outputs:
+  RedisEndpoint:
+    Value: !GetAtt RedisReplicationGroup.PrimaryEndPoint.Address
+  RedisPort:
+    Value: !GetAtt RedisReplicationGroup.PrimaryEndPoint.Port
