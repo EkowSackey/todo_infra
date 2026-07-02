@@ -122,8 +122,6 @@ Resources:
                 AppSpecTemplateArtifact: SourceArtifact
                 TaskDefinitionTemplatePath: taskdef.json
                 AppSpecTemplatePath: appspec.yaml
-                Image1ArtifactName: SourceArtifact
-                Image1ContainerName: IMAGE1_NAME
               InputArtifacts:
                 - Name: SourceArtifact
               RunOrder: 1
@@ -145,6 +143,8 @@ Resources:
         detail:
           action-type:
             - PUSH
+          result:
+            - SUCCESS
           image-tag:
             - latest
           repository-name:
